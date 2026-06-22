@@ -8,6 +8,7 @@ import (
 	"flag"
 	"fmt"
 	"io/fs"
+	"net"
 	"net/http"
 	"os"
 	"path/filepath"
@@ -91,8 +92,8 @@ func init() {
 	flag.BoolVar(&config.flags.register, "register", false, "Register application to run at startup")
 	flag.BoolVar(&config.flags.unregister, "unregister", false, "Remove application from startup")
 	flag.BoolVar(&config.flags.check, "check", false, "Check if application is registered at startup")
-	flag.BoolVar(&config.flags.verbose, "v", false, "Enable verbose logging")
-	flag.BoolVar(&config.flags.verbose, "verbose", false, "Enable verbose logging")
+	flag.BoolVar(&config.flags.verbose, "v", true, "Enable verbose logging")
+	flag.BoolVar(&config.flags.verbose, "verbose", true, "Enable verbose logging")
 	flag.Parse()
 
 	// 4. Autostart Setup
@@ -106,7 +107,8 @@ func init() {
 func main() {
 
 	handleFlags()
-	enforceSingleton()
+	listener := enforceSingleton()
+	defer listener.Close()
 
 	printv("[Init] Daemon starting up (PID: %d)...\n", config.processInfo.PID)
 
@@ -117,7 +119,7 @@ func main() {
 		registerExtension()
 	}
 
-	go startWebServer()
+	go startWebServer(listener)
 	systray.Run(onReady, onExit)
 }
 
@@ -138,36 +140,39 @@ func handleFlags() {
 	}
 }
 
-func enforceSingleton() {
+func enforceSingleton() net.Listener {
+	listener, err := net.Listen("tcp", fmt.Sprintf(":%d", config.port))
+	if err == nil {
+		printv("[Singleton] Reserved port %d for this instance.\n", config.port)
+		return listener
+	}
+
 	client := &http.Client{Timeout: 2 * time.Second}
-	resp, err := client.Get(fmt.Sprintf("http://127.0.0.1:%d/ping/check_singleton", config.port))
+	resp, probeErr := client.Get(fmt.Sprintf("http://127.0.0.1:%d/ping/check_singleton", config.port))
+	if probeErr == nil {
+		defer resp.Body.Close()
 
-	// If connection refused, port is free.
-	if err != nil {
-		printv("[Singleton] Port is free. Binding application.\n")
-		return
-	}
-	defer resp.Body.Close()
+		var existing SingletonPayload
+		if decodeErr := json.NewDecoder(resp.Body).Decode(&existing); decodeErr == nil {
+			fmt.Printf("Application is already running since %s with PID %d.\n",
+				time.Unix(int64(existing.StartTimestamp), 0).Format(time.RFC1123),
+				existing.PID,
+			)
 
-	var existing SingletonPayload
-	err = json.NewDecoder(resp.Body).Decode(&existing)
-	if err != nil {
-		fmt.Printf("Port %d is occupied by an unknown service. Exiting...\n", config.port)
-		os.Exit(1)
-	}
-
-	fmt.Printf("Application is already running since %s with PID %d.\n",
-		time.Unix(int64(existing.StartTimestamp), 0).Format(time.RFC1123),
-		existing.PID,
-	)
-
-	if existing.ExecPath != config.execPath {
-		fmt.Printf("\n[WARNING] Path mismatch detected!\n")
-		fmt.Printf("Running instance path : %s\n", existing.ExecPath)
-		fmt.Printf("Current invoked path  : %s\n", config.execPath)
+			if existing.ExecPath != config.execPath {
+				fmt.Printf("\n[WARNING] Path mismatch detected!\n")
+				fmt.Printf("Running instance path : %s\n", existing.ExecPath)
+				fmt.Printf("Current invoked path  : %s\n", config.execPath)
+			}
+		} else {
+			fmt.Printf("Port %d is occupied by another service. Exiting...\n", config.port)
+		}
+	} else {
+		fmt.Printf("Port %d is already in use. Exiting...\n", config.port)
 	}
 
 	os.Exit(1)
+	return nil
 }
 
 func isRegisteredAsAutostart() bool {
@@ -293,8 +298,9 @@ func injectBrowserFlags(extensionDirAbs string) {
 	}
 }
 
-func startWebServer() {
-	http.HandleFunc("/set_count", func(w http.ResponseWriter, r *http.Request) {
+func startWebServer(listener net.Listener) {
+	mux := http.NewServeMux()
+	mux.HandleFunc("/set_count", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -313,7 +319,7 @@ func startWebServer() {
 		fmt.Fprintf(w, "[Daemon] Count set to %d", count)
 	})
 
-	http.HandleFunc("/ping/check_singleton", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/ping/check_singleton", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusNoContent)
@@ -324,7 +330,7 @@ func startWebServer() {
 	})
 
 	printv("[Daemon] Listening for WhatsApp triggers on :%d\n", config.port)
-	http.ListenAndServe(fmt.Sprintf(":%d", config.port), nil)
+	http.Serve(listener, mux)
 }
 
 func SetIcon(count int) {
