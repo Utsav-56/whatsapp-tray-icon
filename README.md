@@ -115,8 +115,8 @@ Prerequisites: Go 1.16+ (for `//go:embed` support).
 
 ```bash
 # Clone the repository
-git clone https://github.com/Utsav-56/whatsapp-pwa-icon.git
-cd whatsapp-tray-watcher
+git clone https://github.com/Utsav-56/whatsapp-tray-icon.git.git
+cd whatsapp-tray-icon
 
 # Build the standalone binary
 go build -o whatsapp-tray-daemon
