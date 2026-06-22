@@ -15,13 +15,11 @@ async function trySendCount(count) {
 if (targetNode) {
 	let lastCount = "";
 
-	// Made the callback async to handle sequential async operations
 	const callback = async () => {
 		const title = document.title;
 		const match = title.match(/\((\d+)\)/);
 		const count = match ? match[1] : "0";
 
-		// Only send an HTTP request if the count actually changed
 		if (count !== lastCount) {
 			lastCount = count;
 
@@ -29,7 +27,6 @@ if (targetNode) {
 		}
 	};
 
-	// MutationObserver reacts to DOM modifications natively without loops
 	const observer = new MutationObserver(callback);
 	observer.observe(targetNode, { childList: true });
 
